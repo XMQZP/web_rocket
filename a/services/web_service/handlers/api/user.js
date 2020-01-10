@@ -33,10 +33,30 @@ module.exports = {
         return lib.web.returnBody(ctx, account_user);
     },
     async register(ctx, query) {
+        let userid = ctx.request.headers['userid'];
+        //
         let account = query.account;
         let password = query.password;
         let email = query.email;
         let name = query.name;
+        //下级开户参数
+        let registerNextUser = query.next_user;
+        let registerNextRole = query.next_role;
+        if (registerNextUser) {
+            let account_user = await mysql_service.accountOrm['users'].getOrmInstance().findOne({
+                where: {
+                    _user_id: userid,
+                }
+            });
+            if (account && account_user.dataValues) {
+                if (account.dataValues._role < 1) {
+                    return lib.web.returnBody(ctx, '您的账号不是代理账号，无法开户下级');
+                }
+
+            } else {
+                return lib.web.returnBody(ctx, '不存在的用户');
+            }
+        }
         //
         if (account == null || password == null || email == null || name == null) {
             return lib.web.returnBody(ctx, '信息填写不完整', 6);
@@ -57,7 +77,7 @@ module.exports = {
                 _email: email,
             }
         });
-        account_user && account_user.dataValues && (account_user.dataValues.ret = [account_user.dataValues]);
+        account_user && account_user.dataValues && (account_user.ret = [account_user.dataValues]);
         if (/*account_user.err || */ account_user && account_user.ret && account_user.ret.length) {
             lib.web.returnBody(ctx, '账号或邮箱已存在', 1);
         } else {
@@ -87,6 +107,7 @@ module.exports = {
                 _password: password,
                 _amount_password: password,
                 _nickname: account,
+                _role: registerNextRole || null,
                 _amount: amount,
                 _commission: 0,
                 _register_ip: clientIP,
@@ -100,7 +121,11 @@ module.exports = {
                 await mysql_service.accountOrm['users'].getOrmInstance().destroy({where: {_account: account}});
                 return lib.web.returnBody(ctx, '注册账号出错');
             }
-            return lib.web.returnBody(ctx, '成功注册账号 ' + account);
+            if (registerNextUser) {
+                await this.bindDealer(ctx, {userid: user_id, bind_next: true});
+            } else {
+                return lib.web.returnBody(ctx, '成功注册账号 ' + account);
+            }
         }
     },
     async home(ctx) {
@@ -162,13 +187,6 @@ module.exports = {
         if (!userInfo[0]) {
             return lib.web.returnBody(ctx, '原密码不对或者原密码与新密码相同');
         }
-        // userInfo.ret = userInfo;
-        // if (userInfo.err || userInfo.ret == null) {
-        //     return lib.web.returnBody(ctx, '原密码不对', 1);
-        // }
-        // if (!userInfo.ret.affectedRows) {
-        //     return lib.web.returnBody(ctx, '新密码与原密码一样', 4);
-        // }
         //修改API
         try {
             let result = await interactive_service.restApi.updateUserInfo(userid, {password: newPassword});
@@ -214,12 +232,6 @@ module.exports = {
         if (!cheatRet[0]) {
             return lib.web.returnBody(ctx, '原密码不对或者新密码与原密码相同');
         }
-        // if (cheatRet.err || cheatRet.ret == null) {
-        //     return lib.web.returnBody(ctx, '原资金密码不对', 1);
-        // }
-        // if (!cheatRet.ret.affectedRows) {
-        //     return lib.web.returnBody(ctx, '新资金密码与原密码一样', 4);
-        // }
         return lib.web.returnBody(ctx, '资金密码修改成功');
     },
     //重设密码
@@ -300,10 +312,14 @@ module.exports = {
         }
         return lib.web.returnBody(ctx, '提现申请已提交');
     },
-    //绑定代理
+    //绑定上级代理
     async bindDealer(ctx, query) {
         let userid = ctx.request.headers['userid'];
-        let {up_id} = query;
+        let {up_id, bind_next} = query;
+        //是否是绑定下级
+        if (bind_next) {
+            [up_id, userid] = [userid, up_id];
+        }
         let user_info = await mysql_service.accountOrm['users'].getOrmInstance().findOne({where: {_user_id: up_id}});
         if (!user_info.dataValues) {
             return lib.web.returnBody(ctx, '不存在的上级用户', 1);
@@ -335,8 +351,13 @@ module.exports = {
         //非多余操作
         let aryS = [].concat(ary);
         await mysql_service.accountOrm['dealers'].getOrmInstance().bulkCreate(aryS);
-        return lib.web.returnBody(ctx, '绑定成功');
+        if (bind_next) {
+            return lib.web.returnBody(ctx, '为下级开户成功');
+        } else {
+            return lib.web.returnBody(ctx, '绑定成功');
+        }
     },
+    //获取代理
     async getDealers(ctx, query) {
         let userid = ctx.request.headers['userid'];
         //
@@ -352,7 +373,9 @@ module.exports = {
         }
         //
         lib.mysql.getDealersTree(lib.tool.getObjectArrayInAttributesArray(retArray, 'dataValues'));
+        return lib.web.returnBody(ctx, retArray);
     },
+    //添加充值记录
     async addRecharge(ctx, query) {
         let userid = ctx.request.headers['userid'];
         let {amount} = query;
@@ -369,6 +392,7 @@ module.exports = {
         //
         lib.web.returnBody(ctx, '提交充值成功');
     },
+    //结算
     async calcRecharges(ctx, query) {
         // let todayRecharges = await mysql_service.accountOrm['recharge'].getOrmInstance().findAll({
         //     order: [['_user_id']]
@@ -401,11 +425,20 @@ module.exports = {
         let sql_configs = await mysql_service.accountOrm['cash_configs'].getOrmInstance().findAll();
         let configs = lib.tool.getObjectArrayInAttributesArray(sql_configs, 'dataValues');
         //开始分润
-        for(let treeId in treeObjects){
+        for (let treeId in treeObjects) {
             let tree = treeObjects[treeId];
             tree.dividendCommission(configs);
             //写佣金分 TODO:
+            for (let uid in tree.info) {
+                let userInfo = tree.info[uid];
+                if (userInfo.meCommission > 0) {
+                    let uUser = await mysql_service.accountOrm['users'].getOrmInstance().findOne({where: {_user_id: uid}});
+                    if (uUser) {
+                        uUser.increment({_commission: userInfo.meCommission});
+                    }
+                }
+            }
         }
-        console.log(treeObjects);
+        lib.web.returnBody(ctx, '写分成功');
     }
 }

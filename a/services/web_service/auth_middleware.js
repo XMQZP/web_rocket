@@ -16,6 +16,10 @@ async function verification_token(user_id, token) {
                 _token: token
             }
         });
+        if(ret == null){
+            resolve(false);
+            return;
+        }
         ret = [ret.dataValues];
         if (err || ret == null || ret[0] == null || ret[0]._token == null || ret[0]._token != token) {
             return resolve(false);

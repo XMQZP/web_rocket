@@ -2,7 +2,7 @@ const programName = 'server';
 module.exports = function (SERVER_TYPE) {
     //您要写入日志文件的路径
     let filename = null;
-    if(process.platform == 'linux'){
+    if(process.platform === 'linux'){
         filename = __dirname + `/../logs/${programName}-${SERVER_TYPE}`;
     }else{
         filename = __dirname + `\\..\\logs\\${programName}-${SERVER_TYPE}`;
