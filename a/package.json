@@ -29,6 +29,6 @@
   },
   "devDependencies": {
     "generic-pool": "^3.7.1",
-    "log4js": "^6.1.0"
+    "log4js": "^6.4.0"
   }
 }
